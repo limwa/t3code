@@ -50,6 +50,7 @@ const makeHandlerLayer = (
   recorded: RecordedRegistration,
   input: {
     readonly environment?: Record<string, unknown>;
+    readonly updateDesktopDatabaseExitCode?: number;
     readonly xdgMimeExitCode?: number;
     readonly writeError?: PlatformError.PlatformError;
     readonly existingEntry?: string;
@@ -83,7 +84,11 @@ const makeHandlerLayer = (
               command: childProcess.command,
               args: childProcess.args,
             });
-            return Effect.succeed(mockProcess(input.xdgMimeExitCode ?? 0));
+            const exitCode =
+              childProcess.command === "update-desktop-database"
+                ? (input.updateDesktopDatabaseExitCode ?? 0)
+                : (input.xdgMimeExitCode ?? 0);
+            return Effect.succeed(mockProcess(exitCode));
           }),
         ),
       ),
@@ -154,7 +159,7 @@ describe("DesktopLinuxUrlHandler", () => {
     );
   });
 
-  it.effect("writes the handler entry and claims the scheme default via xdg-mime", () => {
+  it.effect("writes the handler entry, refreshes the MIME cache, and claims the scheme default", () => {
     const recorded = emptyRecording();
 
     return Effect.gen(function* () {
@@ -172,6 +177,10 @@ describe("DesktopLinuxUrlHandler", () => {
       );
       assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code;");
       assert.deepEqual(recorded.commands, [
+        {
+          command: "update-desktop-database",
+          args: ["/home/alice/.local/share/applications"],
+        },
         {
           command: "xdg-mime",
           args: ["default", "com.t3tools.T3Code.desktop", "x-scheme-handler/t3code"],
@@ -207,7 +216,16 @@ describe("DesktopLinuxUrlHandler", () => {
 
       assert.deepEqual(recorded.files, []);
       assert.deepEqual(recorded.directories, []);
-      assert.equal(recorded.commands.length, 1);
+      assert.deepEqual(recorded.commands, [
+        {
+          command: "update-desktop-database",
+          args: ["/home/alice/.local/share/applications"],
+        },
+        {
+          command: "xdg-mime",
+          args: ["default", "com.t3tools.T3Code.desktop", "x-scheme-handler/t3code"],
+        },
+      ]);
     });
   });
 
@@ -234,10 +252,12 @@ describe("DesktopLinuxUrlHandler", () => {
   });
 
   it.effect("never fails startup when registration cannot complete", () => {
+    const desktopDatabaseFailed = emptyRecording();
     const xdgMimeFailed = emptyRecording();
     const writeFailed = emptyRecording();
 
     return Effect.gen(function* () {
+      yield* runRegister(desktopDatabaseFailed, { updateDesktopDatabaseExitCode: 1 });
       yield* runRegister(xdgMimeFailed, { xdgMimeExitCode: 1 });
       yield* runRegister(writeFailed, {
         writeError: PlatformError.systemError({
@@ -249,6 +269,10 @@ describe("DesktopLinuxUrlHandler", () => {
         }),
       });
 
+      assert.deepEqual(
+        desktopDatabaseFailed.commands.map(({ command }) => command),
+        ["update-desktop-database", "xdg-mime"],
+      );
       assert.equal(xdgMimeFailed.files.length, 1);
       assert.deepEqual(writeFailed.commands, []);
     });
