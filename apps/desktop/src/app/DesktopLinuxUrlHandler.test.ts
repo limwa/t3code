@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -31,10 +34,10 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
-const mockProcess = (exitCode: number) =>
+const mockProcess = (exitCode: number, stalled = false) =>
   ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+    exitCode: stalled ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     unref: Effect.succeed(Effect.void),
@@ -51,6 +54,8 @@ const makeHandlerLayer = (
   input: {
     readonly environment?: Record<string, unknown>;
     readonly updateDesktopDatabaseExitCode?: number;
+    readonly updateDesktopDatabaseStalled?: boolean;
+    readonly updateDesktopDatabaseStarted?: Deferred.Deferred<void>;
     readonly xdgMimeExitCode?: number;
     readonly writeError?: PlatformError.PlatformError;
     readonly existingEntry?: string;
@@ -88,7 +93,17 @@ const makeHandlerLayer = (
               childProcess.command === "update-desktop-database"
                 ? (input.updateDesktopDatabaseExitCode ?? 0)
                 : (input.xdgMimeExitCode ?? 0);
-            return Effect.succeed(mockProcess(exitCode));
+            const handle = mockProcess(
+              exitCode,
+              childProcess.command === "update-desktop-database" &&
+                input.updateDesktopDatabaseStalled === true,
+            );
+            return childProcess.command === "update-desktop-database" &&
+              input.updateDesktopDatabaseStarted
+              ? Deferred.succeed(input.updateDesktopDatabaseStarted, undefined).pipe(
+                  Effect.as(handle),
+                )
+              : Effect.succeed(handle);
           }),
         ),
       ),
@@ -159,35 +174,38 @@ describe("DesktopLinuxUrlHandler", () => {
     );
   });
 
-  it.effect("writes the handler entry, refreshes the MIME cache, and claims the scheme default", () => {
-    const recorded = emptyRecording();
+  it.effect(
+    "writes the handler entry, refreshes the MIME cache, and claims the scheme default",
+    () => {
+      const recorded = emptyRecording();
 
-    return Effect.gen(function* () {
-      yield* runRegister(recorded);
+      return Effect.gen(function* () {
+        yield* runRegister(recorded);
 
-      assert.deepEqual(recorded.directories, ["/home/alice/.local/share/applications"]);
-      assert.equal(recorded.files.length, 1);
-      assert.equal(
-        recorded.files[0]?.path,
-        "/home/alice/.local/share/applications/com.t3tools.T3Code.desktop",
-      );
-      assert.include(
-        recorded.files[0]?.content,
-        'Exec="/home/alice/Applications/T3-Code.AppImage" %U',
-      );
-      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code;");
-      assert.deepEqual(recorded.commands, [
-        {
-          command: "update-desktop-database",
-          args: ["/home/alice/.local/share/applications"],
-        },
-        {
-          command: "xdg-mime",
-          args: ["default", "com.t3tools.T3Code.desktop", "x-scheme-handler/t3code"],
-        },
-      ]);
-    });
-  });
+        assert.deepEqual(recorded.directories, ["/home/alice/.local/share/applications"]);
+        assert.equal(recorded.files.length, 1);
+        assert.equal(
+          recorded.files[0]?.path,
+          "/home/alice/.local/share/applications/com.t3tools.T3Code.desktop",
+        );
+        assert.include(
+          recorded.files[0]?.content,
+          'Exec="/home/alice/Applications/T3-Code.AppImage" %U',
+        );
+        assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code;");
+        assert.deepEqual(recorded.commands, [
+          {
+            command: "update-desktop-database",
+            args: ["/home/alice/.local/share/applications"],
+          },
+          {
+            command: "xdg-mime",
+            args: ["default", "com.t3tools.T3Code.desktop", "x-scheme-handler/t3code"],
+          },
+        ]);
+      });
+    },
+  );
 
   it.effect("falls back to the process executable outside an AppImage", () => {
     const recorded = emptyRecording();
@@ -277,4 +295,24 @@ describe("DesktopLinuxUrlHandler", () => {
       assert.deepEqual(writeFailed.commands, []);
     });
   });
+
+  it.effect("continues to xdg-mime when the desktop MIME cache refresh stalls", () =>
+    Effect.gen(function* () {
+      const recorded = emptyRecording();
+      const started = yield* Deferred.make<void>();
+      const registration = yield* runRegister(recorded, {
+        updateDesktopDatabaseStalled: true,
+        updateDesktopDatabaseStarted: started,
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(registration);
+
+      assert.deepEqual(
+        recorded.commands.map(({ command }) => command),
+        ["update-desktop-database", "xdg-mime"],
+      );
+    }),
+  );
 });

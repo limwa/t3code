@@ -160,7 +160,7 @@ export const make = Effect.gen(function* () {
         },
       );
       const handle = yield* spawner.spawn(command);
-      const exitCode = yield* handle.exitCode;
+      const exitCode = yield* handle.exitCode.pipe(Effect.timeout("5 seconds"));
       if (exitCode !== 0) {
         return yield* new DesktopLinuxUrlHandlerCacheRefreshError({
           applicationsDir: environment.linuxApplicationsDir,
