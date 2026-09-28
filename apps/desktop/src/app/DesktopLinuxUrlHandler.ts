@@ -8,6 +8,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
+import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
@@ -80,18 +81,20 @@ export function escapeDesktopEntryExecArgument(value: string): string {
   return escapeDesktopEntryString(`"${quoted}"`);
 }
 
-// The AppImage integration entry owns the window identity and icon. This
+// The AppImage integration entry owns the window identity. This
 // hidden URL-only entry must not compete with it for StartupWMClass matching.
 export function renderUrlHandlerDesktopEntry(input: {
   readonly displayName: string;
   readonly execTarget: string;
   readonly scheme: string;
+  readonly iconPath?: string;
 }): string {
   return [
     "[Desktop Entry]",
     "Type=Application",
     `Name=${escapeDesktopEntryString(input.displayName)}`,
     `Exec=${escapeDesktopEntryExecArgument(input.execTarget)} %U`,
+    ...(input.iconPath === undefined ? [] : [`Icon=${escapeDesktopEntryString(input.iconPath)}`]),
     "Terminal=false",
     "NoDisplay=true",
     "StartupNotify=false",
@@ -112,12 +115,15 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const assets = yield* DesktopAssets.DesktopAssets;
 
   const scheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment);
   const desktopEntryPath = environment.path.join(
     environment.linuxApplicationsDir,
     environment.linuxDesktopEntryName,
   );
+  const iconsDir = environment.path.join(environment.linuxApplicationsDir, "..", "icons");
+  const iconPath = environment.path.join(iconsDir, `${environment.linuxDesktopEntryName}.png`);
 
   const writeDesktopEntry = Effect.gen(function* () {
     // Inside the mounted AppImage, process.execPath points at a transient
@@ -127,6 +133,7 @@ export const make = Effect.gen(function* () {
       displayName: environment.displayName,
       execTarget,
       scheme,
+      ...(environment.isPackaged ? { iconPath } : {}),
     });
     // Pre-ready setup normally wrote this already. Avoid truncating a valid
     // entry while the portal may be reading it during startup.
@@ -218,6 +225,14 @@ export const make = Effect.gen(function* () {
     }
     yield* writeDesktopEntry;
     if (!environment.isPackaged) return;
+
+    yield* Effect.gen(function* () {
+      const { png } = yield* assets.iconPaths;
+      if (Option.isNone(png)) return;
+      // The AppImage mount is temporary; the chooser needs the icon after exit.
+      yield* fileSystem.makeDirectory(iconsDir, { recursive: true });
+      yield* fileSystem.copyFile(png.value, iconPath);
+    }).pipe(Effect.catch(() => logWarning("URL handler icon copy failed", { iconPath })));
 
     yield* updateDesktopDatabase.pipe(
       // Some MIME implementations, including GIO, use mimeinfo.cache to verify
