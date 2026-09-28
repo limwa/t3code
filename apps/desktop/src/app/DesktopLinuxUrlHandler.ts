@@ -234,7 +234,7 @@ export const make = Effect.gen(function* () {
       yield* fileSystem.copyFile(png.value, iconPath);
     }).pipe(
       Effect.catch((error) =>
-        logWarning("URL handler icon copy failed", { iconPath, message: error.message }),
+        logWarning("URL handler icon copy failed", { iconPath, category: error.reason._tag }),
       ),
     );
 
