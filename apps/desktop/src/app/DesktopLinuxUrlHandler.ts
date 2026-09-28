@@ -232,7 +232,11 @@ export const make = Effect.gen(function* () {
       // The AppImage mount is temporary; the chooser needs the icon after exit.
       yield* fileSystem.makeDirectory(iconsDir, { recursive: true });
       yield* fileSystem.copyFile(png.value, iconPath);
-    }).pipe(Effect.catch(() => logWarning("URL handler icon copy failed", { iconPath })));
+    }).pipe(
+      Effect.catch((error) =>
+        logWarning("URL handler icon copy failed", { iconPath, message: error.message }),
+      ),
+    );
 
     yield* updateDesktopDatabase.pipe(
       // Some MIME implementations, including GIO, use mimeinfo.cache to verify
