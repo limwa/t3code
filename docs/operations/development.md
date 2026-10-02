@@ -143,6 +143,12 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+### Distribution packages
+
+Packages that assemble the resources directory themselves can verify it with
+`node scripts/check-desktop-resources.ts <resources-dir>`. It reads the same list electron-builder
+copies from, and fails if any of those resources is missing.
+
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install
